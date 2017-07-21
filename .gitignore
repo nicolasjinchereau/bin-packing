@@ -1,0 +1,7 @@
+/example/Debug/
+/example/Release/
+.vs
+*.VC.opendb
+*.VC.db
+!/SFML-2.4.2/bin/*
+!/SFML-2.4.2/lib/*
