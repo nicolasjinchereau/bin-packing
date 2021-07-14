@@ -1,90 +1,88 @@
 /*---------------------------------------------------------------------------------------------
-*  Copyright (c) Nicolas Jinchereau. All rights reserved.
+*  Copyright (c) 2020 Nicolas Jinchereau. All rights reserved.
 *  Licensed under the MIT License. See License.txt in the project root for license information.
 *--------------------------------------------------------------------------------------------*/
 
 #pragma once
 #include <vector>
+#include <array>
+#include <algorithm>
+#include <list>
+#include <Size.h>
+#include <Rect.h>
+#include <Bin.h>
+#include <Node.h>
+#include <NodeAllocator.h>
 
 namespace binpacking
 {
-    struct Size
-    {
-        int x, y;
 
-        Size(int x = 0, int y = 0)
-            : x(x), y(y){}
+class BinPacker
+{
+    static bool IsAreaDescending(const RectMapping& a, const RectMapping& b) {
+        return a.inputSize.area() > b.inputSize.area();
+    }
 
-        int area() const {
-            return x * y;
-        }
+    static bool IsPerimeterDescending(const RectMapping& a, const RectMapping& b) {
+        return a.inputSize.perimeter() > b.inputSize.perimeter();
+    }
 
-        int perimeter() const {
-            return (x + y) * 2;
-        }
+    static bool IsMaxSideLengthDescending(const RectMapping& a, const RectMapping& b) {
+        return std::max(a.inputSize.x, a.inputSize.y) > std::max(b.inputSize.x, b.inputSize.y);
+    }
+
+    static bool IsMaxWidthDescending(const RectMapping& a, const RectMapping& b) {
+        return a.inputSize.x > b.inputSize.x;
+    }
+
+    static bool IsMaxHeightDescending(const RectMapping& a, const RectMapping& b) {
+        return a.inputSize.y > b.inputSize.y;
+    }
+
+    typedef bool (*BinComparison)(const RectMapping& a, const RectMapping& b);
+
+    constexpr static int NumBinComparison = 5;
+
+    std::array<BinComparison, NumBinComparison> binComparisons {
+        IsAreaDescending,
+        IsPerimeterDescending,
+        IsMaxSideLengthDescending,
+        IsMaxWidthDescending,
+        IsMaxHeightDescending
     };
 
-    struct Rect
-    {
-        int x, y, w, h;
-
-        Rect()
-            : x(0), y(0), w(0), h(0){}
-
-        Rect(int x, int y, int width, int height)
-            : x(x), y(y), w(width), h(height){}
-
-        Rect(Size size)
-            : x(0), y(0), w(size.x), h(size.y){}
-
-        int area() const {
-            return w * h;
-        }
-
-        int perimeter() const {
-            return (w + h) * 2;
-        }
-    };
+    std::array<std::vector<RectMapping>, NumBinComparison> sortedInput;
+    std::vector<RectMapping> input;
+    std::vector<RectMapping> overflow;
+    std::vector<Size> binSizes;
+    std::vector<Bin> bins;
     
-    struct RectMapping
-    {
-        int inputIndex = 0;
-        Size inputSize;
-        Rect mappedRect;
-        bool rotated = false;
-        
-        RectMapping(){}
-        RectMapping(const Size& inputSize, int inputIndex)
-            : inputSize(inputSize), mappedRect(inputSize), inputIndex(inputIndex){}
-    };
+    std::shared_ptr<NodeAllocator> nodeAllocator = std::make_shared<NodeAllocator>();
 
-    struct Bin
-    {
-        Size size;
-        std::vector<RectMapping> mappings;
+    bool dynamicPacking = false;
+    int binSize = 0;
+    int boxPadding = 0;
+    bool allowRotation = true;
 
-        Bin(){}
-        
-        Bin(Bin&& bin) :
-            mappings(move(bin.mappings)), size(bin.size)
-        {
-            bin.size = Size();
-        }
+    Bin PackBin(
+        std::vector<RectMapping>& input,
+        const std::vector<Size>& binSizes,
+        int padding, bool allowRotation,
+        std::vector<RectMapping>& overflow);
 
-        Bin& operator=(Bin&& bin)
-        {
-            mappings = move(bin.mappings);
-            size = bin.size;
-            bin.size = Size();
-        }
-
-        Bin(const Bin&) = default;
-        Bin& operator=(const Bin&) = default;
-    };
-
-    std::vector<Bin> Pack(
-        const std::vector<Size>& sizes,
+public:
+    void PackBoxes(
+        const std::vector<Size>& boxes,
         int maxSize,
-        int padding, 
+        int padding,
         bool allowRotation = true);
+
+    void StartDynamicPacking(int binSize, int boxPadding, bool allowRotation);
+    RectMapping PackBox(const Size& box);
+
+    const std::vector<Bin>& GetBins() const {
+        return bins;
+    }
+};
+
 }

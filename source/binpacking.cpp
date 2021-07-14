@@ -1,289 +1,212 @@
 /*---------------------------------------------------------------------------------------------
-*  Copyright (c) Nicolas Jinchereau. All rights reserved.
+*  Copyright (c) 2020 Nicolas Jinchereau. All rights reserved.
 *  Licensed under the MIT License. See License.txt in the project root for license information.
 *--------------------------------------------------------------------------------------------*/
 
 #pragma once
-#include <binpacking.h>
+#include <BinPacking.h>
 #include <vector>
 #include <algorithm>
 #include <array>
 #include <memory>
 #include <stdexcept>
+#include <cmath>
+#include <cassert>
+
 using namespace std;
 
 namespace binpacking
 {
-    bool IsAreaDescending(const RectMapping& a, const RectMapping& b) {
-        return a.inputSize.area() > b.inputSize.area();
-    }
 
-    bool IsPerimeterDescending(const RectMapping& a, const RectMapping& b) {
-        return a.inputSize.perimeter() > b.inputSize.perimeter();
-    }
-
-    bool IsMaxSideLengthDescending(const RectMapping& a, const RectMapping& b) {
-        return max(a.inputSize.x, a.inputSize.y) > max(b.inputSize.x, b.inputSize.y);
-    }
-
-    bool IsMaxWidthDescending(const RectMapping& a, const RectMapping& b) {
-        return a.inputSize.x > b.inputSize.x;
-    }
-
-    bool IsMaxHeightDescending(const RectMapping& a, const RectMapping& b) {
-        return a.inputSize.y > b.inputSize.y;
-    }
-
-    typedef bool (*BinComparison)(const RectMapping& a, const RectMapping& b);
-
-    array<BinComparison, 5> binComparisons {
-        IsAreaDescending,
-        IsPerimeterDescending,
-        IsMaxSideLengthDescending,
-        IsMaxWidthDescending,
-        IsMaxHeightDescending
-    };
-
-    enum class NodeType
+Bin BinPacker::PackBin(
+    std::vector<RectMapping>& input,
+    const std::vector<Size>& binSizes,
+    int padding,
+    bool allowRotation,
+    std::vector<RectMapping>& overflow)
+{
+    for(size_t i = 0; i < binComparisons.size(); ++i)
     {
-        Empty,   // no contents, no children
-        Branch,  // has contents, has children
-        Leaf     // has contents, no children
-    };
+        sortedInput[i] = input;
+        sort(sortedInput[i].begin(), sortedInput[i].end(), binComparisons[i]);
+    }
 
-    struct Node
+    int largestArea = 0;
+    int bestOrderIndex = -1;
+    int bestSize = 0;
+    int accepted = 0;
+    int remaining = 0;
+
+    NodePtr root = nodeAllocator->GetNode();
+
+    for(size_t i = 0; i < binComparisons.size(); ++i)
     {
-        Rect rect = Rect();
-        NodeType type = NodeType::Empty;
-        RectMapping* pMapping = nullptr;
-        unique_ptr<Node> left;
-        unique_ptr<Node> right;
-    
-        void Reset(const Rect& rc)
+        int binSizeCount = (int)binSizes.size();
+        for(int size = bestSize; size < binSizeCount; ++size)
         {
-            rect = rc;
-            pMapping = nullptr;
-            type = NodeType::Empty;
-        }
+            int area = 0;
 
-        Node* Insert(RectMapping& mapping, int padding, bool allowRotation)
-        {
-            if(type == NodeType::Empty)
+            Size sz = binSizes[size];
+            root->Reset(Rect(0, 0, sz.x, sz.y));
+
+            int acc = 0;
+            int rem = 0;
+
+            for(auto& loc : sortedInput[i])
             {
-                if(mapping.inputSize.x == rect.w &&
-                   mapping.inputSize.y == rect.h)
-                {
-                    pMapping = &mapping;
-                    pMapping->mappedRect = Rect(rect.x, rect.y, mapping.inputSize.x, mapping.inputSize.y);
-                    pMapping->rotated = false;
-                    type = NodeType::Leaf;
-                    return this;
+                if(root->Insert(loc, padding, allowRotation)) {
+                    area += loc.mappedRect.area();
+                    ++acc;
                 }
-                else if(allowRotation &&
-                        mapping.inputSize.x == rect.h &&
-                        mapping.inputSize.y == rect.w)
-                {
-                    pMapping = &mapping;
-                    pMapping->mappedRect = Rect(rect.x, rect.y, mapping.inputSize.y, mapping.inputSize.x);
-                    pMapping->rotated = true;
-                    type = NodeType::Leaf;
-                    return this;
-                }
-                else if(mapping.inputSize.x <= rect.w &&
-                        mapping.inputSize.y <= rect.h)
-                {
-                    pMapping = &mapping;
-                    pMapping->mappedRect = Rect(rect.x, rect.y, mapping.inputSize.x, mapping.inputSize.y);
-                    pMapping->rotated = false;
-                    SplitBranch(padding);
-                    type = NodeType::Branch;
-                    return this;
-                }
-                else if(allowRotation &&
-                        mapping.inputSize.x <= rect.h &&
-                        mapping.inputSize.y <= rect.w)
-                {
-                    pMapping = &mapping;
-                    pMapping->mappedRect = Rect(rect.x, rect.y, mapping.inputSize.y, mapping.inputSize.x);
-                    pMapping->rotated = true;
-                    SplitBranch(padding);
-                    type = NodeType::Branch;
-                    return this;
+                else {
+                    ++rem;
                 }
             }
-            else if(type == NodeType::Branch)
+
+            if((area > largestArea && size >= bestSize)
+            || (size > bestSize && area >= largestArea))
             {
-                auto ret = left->Insert(mapping, padding, allowRotation);
-                if(!ret) ret = right->Insert(mapping, padding, allowRotation);
-                return ret;
-            }
-
-            return nullptr;
-        }
-
-        void SplitBranch(int padding)
-        {
-            if(!left) left = make_unique<Node>();
-            if(!right) right = make_unique<Node>();
-            
-            int remWidth = rect.w - pMapping->mappedRect.w;
-            int remHeight = rect.h - pMapping->mappedRect.h;
-
-            if(remWidth > remHeight)
-            {
-                // split vertically
-                left->rect = Rect(rect.x, rect.y + pMapping->mappedRect.h, pMapping->mappedRect.w, remHeight);
-                left->type = NodeType::Empty;
-                left->pMapping = nullptr;
-                right->rect = Rect(rect.x + pMapping->mappedRect.w, rect.y, remWidth, rect.h);
-                right->type = NodeType::Empty;
-                right->pMapping = nullptr;
-
-                left->rect.y += padding;
-                left->rect.h -= padding;
-                right->rect.x += padding;
-                right->rect.w -= padding;
+                largestArea = area;
+                bestOrderIndex = i;
+                bestSize = size;
+                accepted = acc;
+                remaining = rem;
             }
             else
             {
-                // split horizontally
-                left->rect = Rect(rect.x + pMapping->mappedRect.w, rect.y, remWidth, pMapping->mappedRect.h);
-                left->type = NodeType::Empty;
-                left->pMapping = nullptr;
-                right->rect = Rect(rect.x, rect.y + pMapping->mappedRect.h, rect.w, remHeight);
-                right->type = NodeType::Empty;
-                right->pMapping = nullptr;
-
-                left->rect.x += padding;
-                left->rect.w -= padding;
-                right->rect.y += padding;
-                right->rect.h -= padding;
-            }
-        }
-    };
-
-    Bin PackBin(vector<RectMapping>& input, const vector<Size>& binSizes, int padding, bool allowRotation, vector<RectMapping>& overflow)
-    {
-        array<vector<RectMapping>, binComparisons.size()> sortedInput;
-        
-        for(size_t i = 0; i < binComparisons.size(); ++i)
-        {
-            sortedInput[i] = input;
-            sort(sortedInput[i].begin(), sortedInput[i].end(), binComparisons[i]);
-        }
-
-        int largestArea = 0;
-        int bestOrderIndex = -1;
-        int bestSize = 0;
-        int accepted = 0;
-        int remaining = 0;
-
-        Node root;
-
-        for(size_t i = 0; i < binComparisons.size(); ++i)
-        {
-            int binSizeCount = (int)binSizes.size();
-            for(int size = bestSize; size < binSizeCount; ++size)
-            {
-                int area = 0;
-
-                Size sz = binSizes[size];
-                root.Reset(Rect(0, 0, sz.x, sz.y));
-
-                int acc = 0;
-                int rem = 0;
-
-                for(auto& loc : sortedInput[i])
-                {
-                    if(root.Insert(loc, padding, allowRotation))
-                    {
-                        area += loc.mappedRect.area();
-                        ++acc;
-                    }
-                    else
-                    {
-                        ++rem;
-                    }
-                }
-
-                if((area > largestArea && size >= bestSize)
-                || (size > bestSize && area >= largestArea))
-                {
-                    largestArea = area;
-                    bestOrderIndex = i;
-                    bestSize = size;
-                    accepted = acc;
-                    remaining = rem;
-                }
-                else
-                {
-                    break;
-                }
-            }
-        }
-
-        Bin bin;
-        bin.size = binSizes[bestSize];
-        bin.mappings.reserve(accepted);
-        overflow.reserve(remaining);
-
-        root.Reset(Rect(bin.size));
-
-        for(auto& loc : sortedInput[bestOrderIndex])
-        {
-            if(root.Insert(loc, padding, allowRotation))
-                bin.mappings.push_back(loc);
-            else
-                overflow.push_back(loc);
-        }
-
-        return bin;
-    }
-
-    vector<Bin> Pack(const vector<Size>& sizes, int maxSize, int padding, bool allowRotation)
-    {
-        if(maxSize > 0 && (maxSize & (maxSize - 1)) != 0)
-            throw runtime_error("'maxSize' must be a power of two");
-
-        vector<RectMapping> input;
-        vector<RectMapping> overflow;
-        
-        input.reserve(sizes.size());
-        int inputIndex = 0;
-
-        for(auto& size : sizes)
-        {
-            if(size.x > maxSize || size.y > maxSize)
-                throw runtime_error("all sizes must fit inside bounds 'maxSize'x'maxSize'");
-
-            input.push_back(RectMapping(size, inputIndex++));
-        }
-        
-        vector<Size> binSizes;
-        binSizes.reserve((int)(log2(maxSize) * 3 + 0.5));
-
-        for(int binSize = maxSize; binSize > 1; binSize /= 2)
-        {
-            binSizes.push_back(Size(binSize, binSize));
-            binSizes.push_back(Size(binSize, binSize / 2));
-            binSizes.push_back(Size(binSize / 2, binSize));
-        }
-
-        vector<Bin> bins;
-        bins.reserve(8);
-
-        while(true)
-        {
-            Bin bin = PackBin(input, binSizes, padding, allowRotation, overflow);
-            bins.emplace_back(move(bin));
-
-            if(overflow.empty())
                 break;
-
-            overflow.swap(input);
-            overflow.clear();
+            }
         }
-
-        return bins;
     }
+
+    Bin bin;
+    bin.size = binSizes[bestSize];
+    bin.mappings;
+    overflow.reserve(remaining);
+
+    root->Reset(Rect(bin.size));
+
+    for(auto& loc : sortedInput[bestOrderIndex])
+    {
+        auto node = root->Insert(loc, padding, allowRotation);
+        if (node) {
+            bin.mappings.push_back(loc);
+            node->pMapping = &bin.mappings.back();
+        }
+        else {
+            overflow.push_back(loc);
+        }
+    }
+
+    return bin;
+}
+
+void BinPacker::PackBoxes(const std::vector<Size>& boxes, int maxSize, int padding, bool allowRotation)
+{
+    if(maxSize > 0 && (maxSize & (maxSize - 1)) != 0)
+        throw std::runtime_error("'maxSize' must be a power of two");
+
+    dynamicPacking = false;
+
+    input.clear();
+    overflow.clear();
+    
+    input.reserve(boxes.size());
+    int inputIndex = 0;
+
+    for(auto& box : boxes)
+    {
+        if(box.x > maxSize || box.y > maxSize)
+            throw std::runtime_error("all boxes must fit inside bounds 'maxSize'x'maxSize'");
+
+        input.push_back(RectMapping(box, inputIndex++));
+    }
+    
+    binSizes.clear();
+    binSizes.reserve((int)(log2(maxSize) * 3 + 0.5));
+
+    for(int binSize = maxSize; binSize > 1; binSize /= 2)
+    {
+        binSizes.push_back(Size(binSize, binSize));
+        binSizes.push_back(Size(binSize, binSize / 2));
+        binSizes.push_back(Size(binSize / 2, binSize));
+    }
+
+    bins.clear();
+    bins.reserve(4);
+
+    while(true)
+    {
+        Bin bin = PackBin(input, binSizes, padding, allowRotation, overflow);
+        bins.emplace_back(move(bin));
+
+        if(overflow.empty())
+            break;
+
+        overflow.swap(input);
+        overflow.clear();
+    }
+}
+
+void BinPacker::StartDynamicPacking(int binSize, int boxPadding, bool allowRotation)
+{
+    dynamicPacking = true;
+    this->binSize = binSize;
+    this->boxPadding = boxPadding;
+    this->allowRotation = allowRotation;
+
+    bins.clear();
+
+    Bin bin({ binSize, binSize });
+    bin.root = nodeAllocator->GetNode();
+    bin.root->Reset(Rect(0, 0, binSize, binSize));
+    bins.push_back(std::move(bin));
+}
+
+RectMapping BinPacker::PackBox(const Size& box)
+{
+    if (!dynamicPacking)
+        throw std::runtime_error("'StartDynamicPacking' must be called first");
+
+    if(box.x > binSize || box.y > binSize)
+        throw std::runtime_error("box is too large");
+    
+    Node* insertedNode = nullptr;
+    
+    int i = 0;
+
+    for ( ; i < (int)bins.size(); ++i)
+    {
+        auto& bin = bins[i];
+        auto mapping = RectMapping{ box, i };
+
+        insertedNode = bin.root->Insert(mapping, boxPadding, allowRotation);
+        if (insertedNode)
+        {
+            bin.mappings.push_back(mapping);
+            insertedNode->pMapping = &bin.mappings.back();
+            break;
+        }
+    }
+
+    if (!insertedNode)
+    {
+        Bin newBin({ binSize, binSize });
+        newBin.root = nodeAllocator->GetNode();
+        newBin.root->Reset(Rect(0, 0, binSize, binSize));
+        bins.push_back(std::move(newBin));
+
+        auto& bin = bins.back();
+        auto mapping = RectMapping{ box, i };
+
+        insertedNode = bin.root->Insert(mapping, boxPadding, allowRotation);
+        assert(insertedNode);
+
+        bin.mappings.push_back(mapping);
+        insertedNode->pMapping = &bin.mappings.back();
+    }
+
+    return *insertedNode->pMapping;
+}
+
 }
